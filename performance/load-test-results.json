@@ -1,0 +1,20 @@
+{
+  "timestamp": "2026-10-15T10:34:33.218Z",
+  "apiUrl": "http://localhost:3000",
+  "requests": 100,
+  "concurrency": 10,
+  "successful": 100,
+  "failed": 0,
+  "durationMs": 554.98,
+  "throughputRequestsPerSecond": 180.19,
+  "latencyMs": {
+    "min": 23.39,
+    "average": 53.31,
+    "p50": 48.55,
+    "p95": 84.2,
+    "max": 116.78
+  },
+  "accountUsageAfterTest": "100",
+  "userUsageAfterTest": "100",
+  "failures": []
+}
