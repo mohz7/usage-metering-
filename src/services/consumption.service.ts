@@ -75,6 +75,16 @@ export async function consumeUnits(input: {
 }): Promise<ConsumptionResult> {
   const { accountId, userId, requestId, units } = input;
   const requestedUnits = BigInt(units);
+
+  // Define the current month's boundaries explicitly in UTC.
+  const now = new Date();
+  const monthStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+  );
+  const nextMonthStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)
+  );
+
   const client = await pool.connect();
 
   try {
@@ -100,7 +110,11 @@ export async function consumeUnits(input: {
       throw new Error("ACCOUNT_NOT_FOUND");
     }
 
-    const existing = await getExistingRequest(client, accountId, requestId);
+    const existing = await getExistingRequest(
+      client,
+      accountId,
+      requestId
+    );
 
     if (existing) {
       if (existing.userId !== userId || existing.units !== units) {
@@ -158,10 +172,10 @@ export async function consumeUnits(input: {
           FROM consumption_requests
           WHERE status = 'accepted'
             AND account_id = $1
-            AND created_at >= date_trunc('month', NOW())
-            AND created_at < date_trunc('month', NOW()) + INTERVAL '1 month'
+            AND created_at >= $3
+            AND created_at < $4
         `,
-        [accountId, userId]
+        [accountId, userId, monthStart, nextMonthStart]
       );
 
       const usage = usageResult.rows[0];

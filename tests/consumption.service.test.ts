@@ -1,3 +1,4 @@
+
 import {
   beforeEach,
   describe,
@@ -133,7 +134,7 @@ function setupDatabase(options?: {
 
 describe("consumeUnits", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     setupDatabase();
   });
 
@@ -386,5 +387,52 @@ describe("consumeUnits", () => {
 
     expect(mockQuery).toHaveBeenCalledWith("ROLLBACK");
     expect(mockRelease).toHaveBeenCalledOnce();
+  });
+});
+
+describe("UTC monthly usage boundaries", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDatabase();
+  });
+
+  it("passes explicit UTC month boundaries to the usage query", async () => {
+    const now = new Date();
+    const expectedStart = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+    );
+    const expectedEnd = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)
+    );
+
+    const result = await consumeUnits({
+      accountId: "2",
+      userId: "2",
+      requestId: "test-utc-boundaries",
+      units: "50"
+    });
+
+    expect(result.status).toBe("accepted");
+
+    const usageCall = mockQuery.mock.calls.find(
+      ([sql]) =>
+        typeof sql === "string" &&
+        sql.includes("COALESCE(SUM(units), 0)")
+    );
+
+    expect(usageCall).toBeDefined();
+
+    const [sql, values] = usageCall as [string, unknown[]];
+
+    expect(sql).toContain("created_at >= $3");
+    expect(sql).toContain("created_at < $4");
+    expect(sql).not.toContain("date_trunc");
+
+    expect(values).toEqual([
+      "2",
+      "2",
+      expectedStart,
+      expectedEnd
+    ]);
   });
 });
