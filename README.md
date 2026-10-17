@@ -49,6 +49,8 @@ The service checks:
 
 A request is accepted only when all applicable limits pass. Rejected requests are recorded in history but do not count toward consumed units.
 
+Monthly usage uses **UTC calendar-month boundaries**. For example, October 2026 usage starts at `2026-10-01T00:00:00.000Z` and ends immediately before `2026-11-01T00:00:00.000Z`. A new request is assigned to the UTC month in which it is processed. Historical usage can be queried by month.
+
 ### Rejection Reasons
 
 - `account_max_units_per_request`
@@ -288,6 +290,14 @@ Build the project:
 npm run build
 ```
 
+Run the test suite with code coverage:
+
+```bash
+npm run test:coverage
+```
+
+The coverage command reports statement, branch, function, and line coverage. Coverage reports are generated locally and should be reviewed alongside the test results.
+
 The automated tests cover health checks, API-key authentication, consumption service behavior, plan changes, and plan routes.
 
 ## Performance Testing
@@ -307,6 +317,15 @@ REQUESTS=100 CONCURRENCY=10 node scripts/load-test.mjs
 ```
 
 The script supports up to 1,000 requests and concurrency up to 100. It reports successful and failed requests, total duration, throughput, and latency percentiles. Each run creates additional database records.
+
+The script prints its results to standard output. To preserve a new run's report, redirect the output to a file, for example:
+
+```bash
+mkdir -p performance
+node scripts/load-test.mjs | tee performance/load-test-run.txt
+```
+
+This creates a separate text report and does not overwrite the committed baseline JSON file.
 
 The recorded baseline is stored in `performance/load-test-results.json`.
 
@@ -348,7 +367,7 @@ Database constraints and indexes support account isolation, request idempotency,
 
 ## Limitations and Assumptions
 
-- Monthly usage is calculated using the calendar month represented by the service's database timestamp conventions.
+- Monthly usage is calculated using UTC calendar months, with inclusive start and exclusive end boundaries.
 - Rejected requests are stored for audit/history purposes but do not consume quota.
 - Custom plans are owned by an account and cannot be changed by another account through authenticated routes.
 - The included performance test is a basic local benchmark, not a full stress, soak, or distributed-load test.
