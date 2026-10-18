@@ -17,6 +17,14 @@ A TypeScript and PostgreSQL service that tracks usage for accounts and their use
 - PostgreSQL persistence and Docker Compose support.
 - Automated tests and a reproducible load-test script.
 
+## Quick Start
+
+```bash
+docker compose up --build
+```
+
+This builds and starts the whole stack: PostgreSQL (schema and predefined plans are created on first start), the API at `http://localhost:3000`, and the example client, which runs a short demo against the API and then exits. Look for `Demo completed.` in the output, then press `Ctrl+C`. To stop and also delete the stored data, run `docker compose down -v`.
+
 ## Technology Stack
 
 - Node.js 22
@@ -142,7 +150,7 @@ npm start
 
 ## Docker Compose
 
-Build and start only the API and PostgreSQL services:
+`docker compose up --build` (see Quick Start) starts everything, including the example client. To start only the API and PostgreSQL services:
 
 ```bash
 docker compose up --build -d db api
@@ -261,48 +269,41 @@ Replace `YOUR_API_KEY` with a valid key. Do not publish the key.
 
 ## Example Client
 
-The example client demonstrates account and user quota enforcement, rejection reasons, and the effect of changing a plan.
+`examples/demo-client.mjs` is a small command-line client that calls the service with an account's API key on behalf of two users. The business action is simulated: the client only asks the service whether to allow N units and prints the decision and the remaining allowances. The client code does not change between scenarios; only the plans do.
 
-With the Compose stack running, execute:
+It runs automatically with `docker compose up --build` and prints its output in that terminal, ending with `Demo completed.`. To run it again against a running stack:
 
 ```bash
+docker compose up -d db api
 docker compose run --rm demo-client
 ```
 
-The client creates a separate demo account, a custom account plan, and two users. It demonstrates:
+What it demonstrates, in order:
 
-- An accepted consumption request.
-- A per-request user limit rejection.
-- Shared account quota exhaustion.
-- An account plan upgrade and a subsequent accepted request.
+1. Setup: a custom account plan (150 units/month), User A on the predefined Basic plan (1,000/month, 100 per request), and User B on a custom Tight plan (60/month, 20 per request).
+2. An accepted request, and a rejection caused by a **user** per-request limit (for both users).
+3. A rejection caused by User B's **monthly** allowance.
+4. A rejection caused by the shared **account** allowance, even though User A still has 920 units left.
+5. Switching User B to the predefined Premium plan: a request that was impossible before is now accepted, until the shared account allowance runs out.
+6. Upgrading the account to Pro: the same user and the same client code now succeed. Previously consumed units are preserved across every plan change.
 
-Each run creates additional demo data. Run it only when you want a new demonstration.
+Each run creates a new demo account and plans, so it adds demo data to the database. The client exits with an error if any decision differs from the expected one.
 
 ## Automated Tests
 
-Run the test suite:
-
 ```bash
-npm test
-```
-
-Build the project:
-
-```bash
+npm test                                                  # unit and route tests (database mocked)
+npm run test:coverage                                     # same, with coverage report
+API_URL=http://localhost:3000 npm run test:integration    # needs the API and database running
 npm run build
 ```
 
-Run the test suite with code coverage:
+- **Unit and route tests** (`tests/*.test.ts`) mock the database pool and cover health checks, API-key authentication, account isolation at route and service level, consumption decisions, plan changes and plan routes.
+- **Integration tests** (`tests/integration/`) run against a live API and PostgreSQL (for example the Compose stack) and cover real concurrency behavior: exact accepted counts under concurrent requests on a shared account allowance, per-user allowances, concurrent retries of one request ID, lowering and raising an allowance, and isolation between accounts including missing and invalid API keys. They are skipped when `API_URL` is not set, and they create their own accounts, so they add data to the database.
 
-```bash
-npm run test:coverage
-```
+## Performance Testing (single-user baseline)
 
-The coverage command reports statement, branch, function, and line coverage. Coverage reports are generated locally and should be reviewed alongside the test results.
-
-The automated tests cover health checks, API-key authentication, consumption service behavior, plan changes, and plan routes.
-
-## Performance Testing
+This first script sends unique 1-unit requests for one user and never reaches a limit. See the section below for the correctness-under-load tests and what they showed.
 
 The load-test script creates its own account and user and sends unique consumption requests.
 
@@ -453,6 +454,59 @@ The reason names the rule and its level (`account_` or `user_`). When several ru
 
 Error responses use `{ "error": "<code>" }`: `400` invalid input, `401` bad key, `404` unknown user or account (including another account's user), `409` request ID reused with different input.
 
+### More Examples
+
+Create a custom plan, assign it to a user, then change its limits. The change applies to the next request, with no restart. Use the plan ID returned by the first call:
+
+```bash
+curl -s -X POST http://localhost:3000/api/plans \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"name":"Interns","scope":"user","monthlyAllowance":"200","maxUnitsPerRequest":"20"}'
+
+curl -s -X PATCH http://localhost:3000/api/users/1/plan \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"planId":"5"}'
+
+curl -s -X PUT http://localhost:3000/api/plans/5 \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"name":"Interns","monthlyAllowance":"500","maxUnitsPerRequest":"50"}'
+```
+
+Usage for a month (abridged response):
+
+```bash
+curl -s -H "X-API-Key: $KEY" "http://localhost:3000/api/consumption/usage?month=2026-10"
+```
+
+```json
+{
+  "usage": {
+    "month": "2026-10",
+    "account": { "id": "1", "planName": "Starter", "monthlyAllowance": "10000", "maxUnitsPerRequest": "1000", "used": "25", "remaining": "9975", "exceeded": false },
+    "users": [
+      { "id": "1", "externalId": "alice", "planName": "Basic", "monthlyAllowance": "1000", "maxUnitsPerRequest": "100", "used": "25", "remaining": "975", "exceeded": false }
+    ]
+  }
+}
+```
+
+Request history, newest first, with optional filters (`month`, `userId`, `status` = `accepted` or `rejected`) and pagination (`limit` 1-100, default 20, and `offset`):
+
+```bash
+curl -s -H "X-API-Key: $KEY" \
+  "http://localhost:3000/api/consumption?month=2026-10&userId=1&status=rejected&limit=20&offset=0"
+```
+
+```json
+{
+  "month": "2026-10",
+  "items": [
+    { "id": "7", "userId": "1", "requestId": "doc-43", "units": "150", "status": "rejected", "rejectionReason": "user_max_units_per_request", "createdAt": "2026-10-19T09:30:00.000Z" }
+  ],
+  "pagination": { "total": 1, "limit": 20, "offset": 0, "hasMore": false }
+}
+```
+
 ## Retry Behavior
 
 `requestId` is unique per account. Retrying the same `requestId` with the same user and units returns the original decision with `replayed: true` and never counts twice, even if retries arrive concurrently. Reusing it with a different user or amount returns `409 idempotency_conflict`. A **rejected** request is also stored, so retrying it returns the same rejection; after fixing the cause (for example upgrading a plan), send a **new** `requestId`.
@@ -474,15 +528,6 @@ Error responses use `{ "error": "<code>" }`: `400` invalid input, `401` bad key,
 - **Plans are read on every request**, so a plan update applies to the next decision without a restart.
 - **`UNIQUE (account_id, request_id)`** backs idempotency at the database level, not only in code.
 - **A composite foreign key `(user_id, account_id)`** makes it impossible to record usage for a user under the wrong account.
-
-## Testing
-
-```bash
-npm test                                                     # unit and route tests (database mocked)
-API_URL=http://localhost:3000 npm run test:integration       # real PostgreSQL: concurrency, idempotency, isolation, plan changes
-```
-
-The integration tests send concurrent requests against small allowances and assert that exactly the allowed number is accepted and totals are exact.
 
 ## Performance Testing (correctness under load)
 
