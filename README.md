@@ -400,6 +400,85 @@ Database constraints and indexes support account isolation, request idempotency,
 └── README.md
 ```
 
-## License
+## Getting an API Key
 
-Add a license file if you intend to distribute the project under a specific open-source license.
+Creating an account issues its API key. The plaintext key is returned **once**; only its SHA-256 hash is stored, so it cannot be recovered later.
+
+```bash
+curl -s -X POST http://localhost:3000/api/accounts \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Acme Docs","planId":"1"}'
+```
+
+`planId` is the ID of a predefined account plan (`1` is Starter on a fresh database). Send the returned `apiKey` as `X-API-Key` on every other request. A missing key or malformed key returns `401`, as does a well-formed key that matches no account.
+
+## API Examples
+
+Create a user on the Basic plan, then consume units on their behalf:
+
+```bash
+curl -s -X POST http://localhost:3000/api/users \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"externalId":"alice","planId":"3"}'
+
+curl -s -X POST http://localhost:3000/api/consumption \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"userId":"1","requestId":"doc-42","units":25}'
+```
+
+Accepted response (`200`):
+
+```json
+{ "consumption": { "requestId": "doc-42", "status": "accepted", "rejectionReason": null, "units": "25", "replayed": false } }
+```
+
+A rejection is still a `200` with a decision, because it is a normal business outcome:
+
+```json
+{ "consumption": { "requestId": "doc-43", "status": "rejected", "rejectionReason": "user_max_units_per_request", "units": "150", "replayed": false } }
+```
+
+The reason names the rule and its level (`account_` or `user_`). When several rules would reject a request, the first failing rule in this order is reported: account per-request, user per-request, account monthly, user monthly. `GET /api/consumption/usage` shows each level's plan, allowance, used and remaining units.
+
+Error responses use `{ "error": "<code>" }`: `400` invalid input, `401` bad key, `404` unknown user or account (including another account's user), `409` request ID reused with different input.
+
+## Retry Behavior
+
+`requestId` is unique per account. Retrying the same `requestId` with the same user and units returns the original decision with `replayed: true` and never counts twice, even if retries arrive concurrently. Reusing it with a different user or amount returns `409 idempotency_conflict`. A **rejected** request is also stored, so retrying it returns the same rejection; after fixing the cause (for example upgrading a plan), send a **new** `requestId`.
+
+## Product Assumptions
+
+- The only resource is generic "units"; one resource is used everywhere.
+- The UTC month is decided when a request is processed. Usage is derived from stored accepted requests, so switching a plan never resets usage.
+- Reducing an allowance below existing usage keeps the usage, reports zero remaining (`exceeded: true`), and rejects new consumption at that level until the allowance exceeds usage again.
+- Rejected requests are recorded in history but never counted.
+- Predefined plans are read-only. A custom plan cannot be deleted while assigned.
+- A user is only valid inside the account that registered them; using another account's user returns `404`.
+- Account and user plans both apply, and the account total is the sum of accepted units across its users.
+
+## Design Decisions and Trade-offs
+
+- **Usage is derived, not stored.** There is no counter to drift out of sync with history, so totals are correct by construction and plan changes cannot corrupt them. The cost is that each decision sums the account's accepted rows for the month.
+- **One transaction per request, with a row lock on the account.** All requests for one account are serialized, which keeps the shared allowance correct under concurrency without retries or isolation-level tuning. Requests for different accounts proceed in parallel. This is the main scalability limit within a single account.
+- **Plans are read on every request**, so a plan update applies to the next decision without a restart.
+- **`UNIQUE (account_id, request_id)`** backs idempotency at the database level, not only in code.
+- **A composite foreign key `(user_id, account_id)`** makes it impossible to record usage for a user under the wrong account.
+
+## Testing
+
+```bash
+npm test                                                     # unit and route tests (database mocked)
+API_URL=http://localhost:3000 npm run test:integration       # real PostgreSQL: concurrency, idempotency, isolation, plan changes
+```
+
+The integration tests send concurrent requests against small allowances and assert that exactly the allowed number is accepted and totals are exact.
+
+## Performance Testing (correctness under load)
+
+```bash
+CONCURRENCY=50 OUT=performance/correctness-1acct-c50.json node scripts/load-test-correctness.mjs
+ACCOUNTS=10 ACCOUNT_MONTHLY=300 USER_MONTHLY=100 CONCURRENCY=50 node scripts/load-test-correctness.mjs
+node scripts/summarize-results.mjs
+```
+
+Variables: `REQUESTS`, `CONCURRENCY`, `ACCOUNTS`, `USERS`, `ACCOUNT_MONTHLY`, `USER_MONTHLY`, `SEED`, `OUT`. The script drives random users and amounts until allowances are hit, then verifies that the usage reported by the service equals the units the client saw accepted, per account and per user, and that no allowance was exceeded. It exits non-zero on any mismatch. Each run creates new accounts.

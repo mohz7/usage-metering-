@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-10-18T19:32:00.757Z",
+  "accounts": 1,
+  "usersPerAccount": 10,
+  "requests": 2000,
+  "concurrency": 10,
+  "accountMonthly": 3000,
+  "userMonthly": 400,
+  "durationMs": 7857.64,
+  "throughputRequestsPerSecond": 254.53,
+  "latencyMs": {
+    "p50": 36.79,
+    "p95": 51.97,
+    "p99": 58.79,
+    "max": 69.96
+  },
+  "accepted": 991,
+  "rejected": 1009,
+  "rejectedByReason": {
+    "account_monthly_allowance": 1009
+  },
+  "httpErrors": 0,
+  "totalsMatch": true,
+  "mismatches": []
+}
