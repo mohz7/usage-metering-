@@ -367,13 +367,19 @@ Database constraints and indexes support account isolation, request idempotency,
 - Database constraints enforce key relationships and request uniqueness.
 - API keys, credentials, and `.env` contents must not be committed.
 
-## Limitations and Assumptions
+## Limitations, Assumptions, and Trade-offs
 
-- Monthly usage is calculated using UTC calendar months, with inclusive start and exclusive end boundaries.
-- Rejected requests are stored for audit/history purposes but do not consume quota.
-- Custom plans are owned by an account and cannot be changed by another account through authenticated routes.
-- The included performance test is a basic local benchmark, not a full stress, soak, or distributed-load test.
-- Production deployment should additionally use managed secrets, HTTPS, monitoring, backups, and an appropriate database migration strategy.
+- Monthly usage uses UTC calendar months, with an inclusive start and exclusive end boundary. The month is determined when a request is processed.
+- Rejected requests are recorded for audit/history purposes but do not consume quota. Retrying a rejected request with the same ID replays its original decision.
+- Custom plans are owned by an account and cannot be changed by another account through authenticated routes. Predefined plans are read-only.
+- Requests for the same account are serialized by an account-row lock to enforce the shared allowance under concurrency. A very busy account is therefore limited by single-account throughput; requests for different accounts can proceed in parallel.
+- Each decision sums the account's accepted requests for the current month. Query cost grows with monthly usage volume.
+- API keys cannot currently be rotated or revoked, and users cannot be deleted through the API.
+- Only two quota rules are supported: monthly allowance and maximum units per request.
+- The integration tests exercise real PostgreSQL behavior, including concurrency and idempotency. UTC month-boundary behavior is covered by query-boundary unit tests rather than a live-database test with a controllable clock.
+- Performance measurements are local benchmarks, not a full stress, soak, or distributed-load test. Results are indicative and depend on machine and database state.
+- A possible future optimization is to maintain monthly account and user counters inside the same transaction. This could reduce repeated sums, but would not remove serialization for requests sharing one account.
+- Before production deployment, add managed secrets, HTTPS, monitoring, backups, and an appropriate database migration strategy.
 
 ## Repository Layout
 
@@ -382,9 +388,12 @@ Database constraints and indexes support account isolation, request idempotency,
 ├── examples/
 │   └── demo-client.mjs
 ├── performance/
+│   ├── correctness-*.json
 │   └── load-test-results.json
 ├── scripts/
-│   └── load-test.mjs
+│   ├── load-test.mjs
+│   ├── load-test-correctness.mjs
+│   └── summarize-results.mjs
 ├── sql/
 │   └── schema.sql
 ├── src/
@@ -394,6 +403,8 @@ Database constraints and indexes support account isolation, request idempotency,
 │   ├── services/
 │   └── index.ts
 ├── tests/
+│   └── integration/
+│       └── quota.integration.test.ts
 ├── compose.yaml
 ├── Dockerfile
 ├── package.json
@@ -502,11 +513,4 @@ What the numbers show:
 
 Caveats: one run per configuration, with the load generator, API and database on the same machine, so absolute numbers are indicative only. The 10-account run also used a smaller allowance (300) and therefore a smaller per-account history, so part of its advantage may come from cheaper usage sums rather than the lock alone; these runs do not separate the two effects.
 
-Possible improvement (not implemented): keep a monthly usage counter per account and per user, updated in the same transaction, so a decision reads two rows instead of summing history. That would remove the growing sum cost but not the per-account serialization, which is what keeps the shared allowance exact.
-
-## Known Limitations
-
-- Requests for the same account are serialized by a row lock; a single very busy account is limited to roughly the single-account throughput measured above.
-- Each decision sums the account's accepted requests for the month, so cost grows with monthly volume.
-- API keys cannot be rotated or revoked, and users cannot be deleted through the API.
-- Only two rule types are supported (monthly allowance and maximum per request); no additional custom rules.
+**Possible Future Improvement (Not Implemented):** Replace repeated monthly usage aggregation with dedicated monthly usage counters for each account and user, updated atomically within the same database transaction as each consumption decision. This would reduce query cost as usage history grows. However, account-level row locking would still be needed to enforce shared account quotas correctly under concurrent requests.
