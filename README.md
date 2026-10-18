@@ -482,3 +482,31 @@ node scripts/summarize-results.mjs
 ```
 
 Variables: `REQUESTS`, `CONCURRENCY`, `ACCOUNTS`, `USERS`, `ACCOUNT_MONTHLY`, `USER_MONTHLY`, `SEED`, `OUT`. The script drives random users and amounts until allowances are hit, then verifies that the usage reported by the service equals the units the client saw accepted, per account and per user, and that no allowance was exceeded. It exits non-zero on any mismatch. Each run creates new accounts.
+
+### Results and what I learned
+
+Each run: 2,000 requests, 10 users per account, random 1-5 units, seed 42. Every run verified that the usage reported by the service equals the units the client saw accepted (per account and per user) and that no allowance was exceeded. Raw results are in `performance/correctness-*.json`.
+
+| Run | Accounts | Concurrency | Req/s | p50 ms | p95 ms | p99 ms | Accepted | Rejected | HTTP errors | Totals match |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1acct-c1 | 1 | 1 | 179.26 | 5.22 | 7.88 | 10.47 | 991 | 1009 | 0 | yes |
+| 1acct-c10 | 1 | 10 | 254.53 | 36.79 | 51.97 | 58.79 | 991 | 1009 | 0 | yes |
+| 1acct-c50 | 1 | 50 | 232.06 | 211.55 | 257.17 | 270.30 | 991 | 1009 | 0 | yes |
+| 10acct-c50 | 10 | 50 | 830.47 | 58.72 | 71.70 | 77.27 | 992 | 1008 | 0 | yes |
+
+What the numbers show:
+
+- **Correctness held under contention.** With 50 concurrent clients, accepted usage matched exactly and no limit was exceeded in any run. The integration tests also assert exact accepted counts for concurrent requests against small allowances.
+- **Within one account, throughput stops scaling at around 10 concurrent clients** (about 250 req/s here) and extra concurrency only adds waiting: p50 latency rose from 5 ms to 37 ms to 212 ms. This matches the design: each decision locks the account row, so requests for one account are processed one at a time.
+- **Across accounts, throughput scaled.** At the same concurrency of 50, ten accounts reached about 830 req/s with p50 near 59 ms, about 3.6x the single-account throughput.
+
+Caveats: one run per configuration, with the load generator, API and database on the same machine, so absolute numbers are indicative only. The 10-account run also used a smaller allowance (300) and therefore a smaller per-account history, so part of its advantage may come from cheaper usage sums rather than the lock alone; these runs do not separate the two effects.
+
+Possible improvement (not implemented): keep a monthly usage counter per account and per user, updated in the same transaction, so a decision reads two rows instead of summing history. That would remove the growing sum cost but not the per-account serialization, which is what keeps the shared allowance exact.
+
+## Known Limitations
+
+- Requests for the same account are serialized by a row lock; a single very busy account is limited to roughly the single-account throughput measured above.
+- Each decision sums the account's accepted requests for the month, so cost grows with monthly volume.
+- API keys cannot be rotated or revoked, and users cannot be deleted through the API.
+- Only two rule types are supported (monthly allowance and maximum per request); no additional custom rules.
