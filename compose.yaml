@@ -2,7 +2,6 @@
 services:
   db:
     image: postgres:17-alpine
-    container_name: usage-metering-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: app_user
@@ -23,7 +22,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: usage-metering-api
     restart: unless-stopped
     environment:
       PORT: 3000
@@ -47,7 +45,6 @@ services:
 
   demo-client:
     image: node:22-alpine
-    container_name: usage-metering-demo-client
     restart: "no"
     environment:
       API_URL: http://api:3000
