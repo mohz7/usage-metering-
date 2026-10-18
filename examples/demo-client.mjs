@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
 
 const baseUrl = process.env.API_URL ?? "http://localhost:3000";
+// The schema seeds Starter as plan 1 on a fresh database.
+const starterPlanId = process.env.STARTER_PLAN_ID ?? "1";
 
 async function request(path, { method = "GET", apiKey, body } = {}) {
   const headers = { "Content-Type": "application/json" };
@@ -32,147 +35,156 @@ async function request(path, { method = "GET", apiKey, body } = {}) {
   return data;
 }
 
-function showResult(label, result) {
-  const consumption = result.consumption;
+let apiKey;
 
-  console.log(`\n--- ${label} ---`);
-  console.log(`Decision: ${consumption.status}`);
-  console.log(`Units: ${consumption.units}`);
-  console.log(`Reason: ${consumption.rejectionReason ?? "none"}`);
-  console.log(`Request ID: ${consumption.requestId}`);
-  console.log(`Replayed: ${consumption.replayed}`);
-}
-
-async function showUsage(apiKey) {
-  const result = await request("/api/consumption/usage", { apiKey });
-  const { account, users } = result.usage;
-
-  console.log("\nCurrent usage:");
-  console.log(
-    `Account ${account.id} (${account.planName}): ` +
-    `${account.used}/${account.monthlyAllowance} used, ` +
-    `${account.remaining} remaining`
-  );
-
-  for (const user of users) {
-    console.log(
-      `User ${user.id} (${user.externalId}, ${user.planName}): ` +
-      `${user.used}/${user.monthlyAllowance} used, ` +
-      `${user.remaining} remaining`
-    );
-  }
-}
-
-async function consume(apiKey, userId, requestId, units) {
-  const result = await request("/api/consumption", {
+// The "business action": ask the service, then show the decision and the
+// remaining allowances. This function never changes between scenarios;
+// only plans change.
+async function consume(user, units, label, expected) {
+  const { consumption } = await request("/api/consumption", {
     method: "POST",
     apiKey,
-    body: { userId, requestId, units }
+    body: { userId: user.id, requestId: `demo-${randomUUID()}`, units }
   });
 
-  showResult(`Consume ${units} units`, result);
-  return result.consumption;
+  const { usage } = await request("/api/consumption/usage", { apiKey });
+  const current = usage.users.find((u) => String(u.id) === String(user.id));
+  const verdict =
+    consumption.status === "accepted"
+      ? "ACCEPTED"
+      : `REJECTED (${consumption.rejectionReason})`;
+
+  console.log(`\n> ${label}`);
+  console.log(`  ${user.name} requests ${units} units -> ${verdict}`);
+  console.log(
+    `  remaining: account ${usage.account.remaining}/${usage.account.monthlyAllowance}` +
+      ` (${usage.account.planName}) | ${user.name} ${current.remaining}/${current.monthlyAllowance}` +
+      ` (${current.planName})`
+  );
+
+  const actual = consumption.rejectionReason ?? "accepted";
+
+  if (actual !== expected) {
+    throw new Error(
+      `Unexpected decision for "${label}": expected ${expected}, got ${actual}`
+    );
+  }
 }
 
 async function main() {
   console.log("Usage Metering demo");
   console.log(`API: ${baseUrl}`);
 
-  // The schema seeds Starter as the first account plan on a fresh database.
-  // This project currently uses that predefined plan ID to create the account.
   const created = await request("/api/accounts", {
     method: "POST",
-    body: {
-      name: `Docker Demo ${new Date().toISOString()}`,
-      planId: "1"
-    }
+    body: { name: `Demo ${new Date().toISOString()}`, planId: starterPlanId }
   });
 
+  apiKey = created.apiKey;
   const accountId = created.account.id;
-  const apiKey = created.apiKey;
 
-  console.log(`\nCreated isolated demo account: ${accountId}`);
-  console.log("API key issued. It will not be printed.");
+  console.log(`\nCreated isolated demo account ${accountId} (API key not printed)`);
 
   const { plans } = await request("/api/plans", { apiKey });
-
-  const findPlan = (name, scope) => {
-    const plan = plans.find(
-      (item) => item.name === name && item.scope === scope
-    );
+  const find = (name, scope) => {
+    const plan = plans.find((p) => p.name === name && p.scope === scope);
 
     if (!plan) {
-      throw new Error(`Required predefined plan not found: ${name} (${scope})`);
+      throw new Error(`Predefined plan not found: ${name} (${scope})`);
     }
 
     return plan;
   };
 
-  const proPlan = findPlan("Pro", "account");
-  const basicPlan = findPlan("Basic", "user");
+  const pro = find("Pro", "account");
+  const basic = find("Basic", "user");
+  const premium = find("Premium", "user");
 
-  const customPlanResponse = await request("/api/plans", {
-    method: "POST",
-    apiKey,
-    body: {
-      name: "Docker Demo Account Limit",
-      scope: "account",
-      monthlyAllowance: "150",
-      maxUnitsPerRequest: "1000"
-    }
-  });
+  const tag = Date.now();
 
-  const customPlan = customPlanResponse.plan;
+  const accountPlan = (
+    await request("/api/plans", {
+      method: "POST",
+      apiKey,
+      body: {
+        name: `Demo Account 150 ${tag}`,
+        scope: "account",
+        monthlyAllowance: "150",
+        maxUnitsPerRequest: "1000"
+      }
+    })
+  ).plan;
+
+  const tightPlan = (
+    await request("/api/plans", {
+      method: "POST",
+      apiKey,
+      body: {
+        name: `Demo Tight ${tag}`,
+        scope: "user",
+        monthlyAllowance: "60",
+        maxUnitsPerRequest: "20"
+      }
+    })
+  ).plan;
 
   await request(`/api/accounts/${accountId}/plan`, {
     method: "PATCH",
     apiKey,
-    body: { planId: customPlan.id }
+    body: { planId: accountPlan.id }
   });
 
-  const firstUser = await request("/api/users", {
-    method: "POST",
+  const makeUser = async (name, plan) => {
+    const { user } = await request("/api/users", {
+      method: "POST",
+      apiKey,
+      body: { externalId: `${name}-${tag}`.replace(/\s/g, "-"), planId: plan.id }
+    });
+
+    return { id: user.id, name };
+  };
+
+  const userA = await makeUser("User A", basic);
+  const userB = await makeUser("User B", tightPlan);
+
+  console.log("\nSetup:");
+  console.log("  Account plan : custom, 150 units/month, 1000 per request");
+  console.log("  User A       : Basic (1000/month, 100 per request)");
+  console.log("  User B       : custom Tight (60/month, 20 per request)");
+
+  console.log("\n=== Decisions with the plans above ===");
+  await consume(userA, 80, "Within every limit", "accepted");
+  await consume(userA, 101, "Above User A's per-request limit", "user_max_units_per_request");
+  await consume(userB, 20, "User B within limits", "accepted");
+  await consume(userB, 25, "Above User B's per-request limit", "user_max_units_per_request");
+  await consume(userB, 20, "User B again", "accepted");
+  await consume(userB, 20, "User B reaches its monthly allowance", "accepted");
+  await consume(userB, 1, "User B has no monthly allowance left", "user_monthly_allowance");
+  await consume(
+    userA,
+    11,
+    "User A still has allowance, but the shared account has only 10 left",
+    "account_monthly_allowance"
+  );
+
+  console.log("\n=== Switching User B from Tight to Premium (no client change) ===");
+  await request(`/api/users/${userB.id}/plan`, {
+    method: "PATCH",
     apiKey,
-    body: {
-      externalId: `demo-user-a-${Date.now()}`,
-      planId: basicPlan.id
-    }
+    body: { planId: premium.id }
   });
+  await consume(userB, 10, "User B now has room, and the account has exactly 10 left", "accepted");
+  await consume(userB, 1, "Premium user, but the shared account is exhausted", "account_monthly_allowance");
 
-  const secondUser = await request("/api/users", {
-    method: "POST",
-    apiKey,
-    body: {
-      externalId: `demo-user-b-${Date.now()}`,
-      planId: basicPlan.id
-    }
-  });
-
-  const userA = firstUser.user;
-  const userB = secondUser.user;
-
-  console.log(`Demo account plan: ${customPlan.name} (150 units/month)`);
-  console.log(`User A: ${userA.id} (${userA.planName})`);
-  console.log(`User B: ${userB.id} (${userB.planName})`);
-
-  await consume(apiKey, userA.id, `demo-${Date.now()}-accepted-a`, 80);
-  await consume(apiKey, userA.id, `demo-${Date.now()}-user-limit`, 101);
-  await consume(apiKey, userB.id, `demo-${Date.now()}-accepted-b`, 70);
-  await consume(apiKey, userB.id, `demo-${Date.now()}-account-limit`, 1);
-
-  await showUsage(apiKey);
-
-  console.log("\nUpgrading demo account to Pro...");
+  console.log("\n=== Upgrading the account from custom-150 to Pro ===");
   await request(`/api/accounts/${accountId}/plan`, {
     method: "PATCH",
     apiKey,
-    body: { planId: proPlan.id }
+    body: { planId: pro.id }
   });
+  await consume(userB, 500, "Same user, same client code, larger account allowance", "accepted");
 
-  await consume(apiKey, userB.id, `demo-${Date.now()}-after-upgrade`, 1);
-  await showUsage(apiKey);
-
-  console.log("\nDemo completed.");
+  console.log("\nDemo completed. Usage so far was preserved across every plan change.");
 }
 
 main().catch((error) => {
