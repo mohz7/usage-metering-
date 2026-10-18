@@ -501,7 +501,7 @@ curl -s -H "X-API-Key: $KEY" \
 {
   "month": "2026-10",
   "items": [
-    { "id": "7", "userId": "1", "requestId": "doc-43", "units": "150", "status": "rejected", "rejectionReason": "user_max_units_per_request", "createdAt": "2026-10-19T09:30:00.000Z" }
+    { "id": "7", "accountId": "1", "userId": "1", "requestId": "doc-43", "units": "150", "status": "rejected", "rejectionReason": "user_max_units_per_request", "createdAt": "2026-10-19T09:30:00.000Z" }
   ],
   "pagination": { "total": 1, "limit": 20, "offset": 0, "hasMore": false }
 }
