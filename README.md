@@ -29,7 +29,7 @@ A TypeScript and PostgreSQL service that tracks usage for accounts and their use
 
 ## Architecture
 
-The API uses Express route modules for accounts, users, plans, and consumption. Business logic is separated into services, and PostgreSQL stores accounts, users, plans, and consumption history.
+The API uses Express route modules for accounts, users, plans, and consumption. Business logic is separated into services, while PostgreSQL stores accounts, users, plans, and consumption history.
 
 The consumption service performs quota checks within a database transaction. It locks the account row while processing consumption requests to coordinate shared account quota usage.
 
@@ -62,7 +62,7 @@ Monthly usage uses **UTC calendar-month boundaries**. For example, October 2026 
 
 Account and user plans can be changed without deleting usage history. A plan change affects subsequent consumption decisions.
 
-If a new allowance is lower than the amount already consumed, the remaining allowance is treated as zero and additional consumption is rejected until the applicable quota permits it.
+If a new allowance is lower than the amount already consumed, the remaining allowance is treated as zero, and additional consumption is rejected until the applicable quota permits it.
 
 ### Idempotency
 
@@ -142,11 +142,13 @@ npm start
 
 ## Docker Compose
 
-Build and start the API and PostgreSQL:
+Build and start only the API and PostgreSQL services:
 
 ```bash
-docker compose up --build -d
+docker compose up --build -d db api
 ```
+
+This avoids automatically running the demo client, which creates additional database records.
 
 Check service status:
 
@@ -168,7 +170,7 @@ docker compose logs db
 
 The API is available at `http://localhost:3000`. PostgreSQL is published on port `5433`.
 
-The Compose configuration uses a named volume, `usage_metering_data`, to persist PostgreSQL data.
+The Compose configuration uses a named volume to persist PostgreSQL data.
 
 The schema file is mounted into the PostgreSQL initialization directory. PostgreSQL runs initialization scripts only when initializing a fresh data directory. Starting the stack again does not rerun the schema against an existing database.
 
@@ -255,7 +257,7 @@ curl -H "X-API-Key: YOUR_API_KEY" \
   "http://localhost:3000/api/consumption/usage?month=2026-10"
 ```
 
-Replace `YOUR_API_KEY` with a valid key; do not publish the key.
+Replace `YOUR_API_KEY` with a valid key. Do not publish the key.
 
 ## Example Client
 
